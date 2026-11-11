@@ -118,7 +118,7 @@
 
         <!-- 每日行程:可折叠 -->
         <a-card title="📅 每日行程" :bordered="false" class="days-card">
-          <a-collapse v-model:activeKey="activeDays" accordion>
+          <a-collapse v-model:activeKey="activeDays" >
             <a-collapse-panel
               v-for="(day, index) in tripPlan.days"
               :key="index"
@@ -497,6 +497,16 @@ const exportAsImage = async () => {
   try {
     message.loading({ content: '正在生成图片...', key: 'export', duration: 0 })
 
+    // 👇 导出前：自动展开所有面板
+    const originalActiveDays = [...activeDays.value] // 备份当前展开状态
+    if (tripPlan.value) {
+      activeDays.value = tripPlan.value.days.map((_, i) => i) // 强制展开所有天
+    }
+
+    // 👇 等待 Vue 更新 DOM（非常关键，否则截不到刚展开的内容）
+    await nextTick()
+    await new Promise(resolve => setTimeout(resolve, 300)) // 稍微等一下动画和图片加载
+
     const element = document.querySelector('.main-content') as HTMLElement
     if (!element) {
       throw new Error('未找到内容元素')
@@ -621,7 +631,8 @@ const exportAsImage = async () => {
     link.download = `旅行计划_${tripPlan.value?.city}_${new Date().getTime()}.png`
     link.href = canvas.toDataURL('image/png')
     link.click()
-
+    // 恢复原来的展开状态
+    activeDays.value = originalActiveDays
     message.success({ content: '图片导出成功!', key: 'export' })
   } catch (error: any) {
     console.error('导出图片失败:', error)
