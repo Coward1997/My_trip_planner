@@ -7,7 +7,8 @@ from hello_agents.tools import MCPTool
 from ..services.llm_service import get_llm
 from ..models.schemas import TripRequest, TripPlan, DayPlan, Attraction, Meal, WeatherInfo, Location, Hotel
 from ..config import get_settings
-
+import concurrent.futures
+import time
 # ============ Agent提示词 ============
 
 ATTRACTION_AGENT_PROMPT = """你是景点搜索专家。你的任务是根据城市和用户偏好搜索合适的景点。
@@ -222,65 +223,135 @@ class MultiAgentTripPlanner:
             import traceback
             traceback.print_exc()
             raise
-    
+
+    #串行执行
+    # def plan_trip(self, request: TripRequest) -> TripPlan:
+    #     """
+    #     使用多智能体协作生成旅行计划
+    #
+    #     Args:
+    #         request: 旅行请求
+    #
+    #     Returns:
+    #         旅行计划
+    #     """
+    #     try:
+    #         print(f"\n{'='*60}")
+    #         print(f"🚀 开始多智能体协作规划旅行...")
+    #         print(f"目的地: {request.city}")
+    #         print(f"日期: {request.start_date} 至 {request.end_date}")
+    #         print(f"天数: {request.travel_days}天")
+    #         print(f"偏好: {', '.join(request.preferences) if request.preferences else '无'}")
+    #         print(f"{'='*60}\n")
+    #
+    #         # 步骤1: 景点搜索Agent搜索景点
+    #         print("📍 步骤1: 搜索景点...")
+    #         attraction_query = self._build_attraction_query(request)
+    #         attraction_response = self.attraction_agent.run(attraction_query)
+    #         print(f"景点搜索结果: {attraction_response[:200]}...\n")
+    #
+    #         # 步骤2: 天气查询Agent查询天气
+    #         print("🌤️  步骤2: 查询天气...")
+    #         weather_query = f"请查询{request.city}的天气信息"
+    #         weather_response = self.weather_agent.run(weather_query)
+    #         print(f"天气查询结果: {weather_response[:200]}...\n")
+    #
+    #         # 步骤3: 酒店推荐Agent搜索酒店
+    #         print("🏨 步骤3: 搜索酒店...")
+    #         hotel_query = f"请搜索{request.city}的{request.accommodation}酒店"
+    #         hotel_response = self.hotel_agent.run(hotel_query)
+    #         print(f"酒店搜索结果: {hotel_response[:200]}...\n")
+    #
+    #         # 步骤4: 行程规划Agent整合信息生成计划
+    #         print("📋 步骤4: 生成行程计划...")
+    #         planner_query = self._build_planner_query(request, attraction_response, weather_response, hotel_response)
+    #         planner_response = self.planner_agent.run(planner_query)
+    #         print(f"行程规划结果: {planner_response[:300]}...\n")
+    #
+    #         # 解析最终计划
+    #         trip_plan = self._parse_response(planner_response, request)
+    #
+    #         print(f"{'='*60}")
+    #         print(f"✅ 旅行计划生成完成!")
+    #         print(f"{'='*60}\n")
+    #
+    #         return trip_plan
+    #
+    #     except Exception as e:
+    #         print(f"❌ 生成旅行计划失败: {str(e)}")
+    #         import traceback
+    #         traceback.print_exc()
+    #         return self._create_fallback_plan(request)
+
+    #重试装饰器
+    @staticmethod
+    def _run_with_retry(agent, query, max_retries=3):
+        """带有重试机制的 Agent 调用"""
+        for attempt in range(max_retries):
+            try:
+                return agent.run(query)
+            except Exception as e:
+                if "429" in str(e) and attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2  # 第一次等2秒，第二次等4秒
+                    print(f"⚠️ 遇到限流，{wait_time}秒后重试...")
+                    time.sleep(wait_time)
+                else:
+                    raise e
+
+    #三个Agent并行代码
     def plan_trip(self, request: TripRequest) -> TripPlan:
-        """
-        使用多智能体协作生成旅行计划
+        print(f"\n🚀 开始多智能体协作规划旅行...")
 
-        Args:
-            request: 旅行请求
+        # 准备查询语句
+        attraction_query = f"请搜索{request.city}的{request.preferences}景点"
+        weather_query = f"请查询{request.city}的天气"
+        hotel_query = f"请搜索{request.city}的{request.accommodation}酒店"
 
-        Returns:
-            旅行计划
-        """
-        try:
-            print(f"\n{'='*60}")
-            print(f"🚀 开始多智能体协作规划旅行...")
-            print(f"目的地: {request.city}")
-            print(f"日期: {request.start_date} 至 {request.end_date}")
-            print(f"天数: {request.travel_days}天")
-            print(f"偏好: {', '.join(request.preferences) if request.preferences else '无'}")
-            print(f"{'='*60}\n")
+        # 使用线程池并行执行
+        print("⏳ 正在并行搜索：景点、天气、酒店...")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            future_attr = executor.submit(self._run_with_retry, self.attraction_agent, attraction_query)
+            future_weather = executor.submit(self._run_with_retry, self.weather_agent, weather_query)
+            future_hotel = executor.submit(self._run_with_retry, self.hotel_agent, hotel_query)
 
-            # 步骤1: 景点搜索Agent搜索景点
-            print("📍 步骤1: 搜索景点...")
-            attraction_query = self._build_attraction_query(request)
-            attraction_response = self.attraction_agent.run(attraction_query)
-            print(f"景点搜索结果: {attraction_response[:200]}...\n")
+            # 获取结果，并捕获可能的异常
+            try:
+                attraction_response = future_attr.result()
+                print("✅ 景点搜索完成")
+            except Exception as e:
+                print(f"❌ 景点搜索失败: {e}")
+                import traceback
+                traceback.print_exc()
+                attraction_response = "未获取到景点信息。"
 
-            # 步骤2: 天气查询Agent查询天气
-            print("🌤️  步骤2: 查询天气...")
-            weather_query = f"请查询{request.city}的天气信息"
-            weather_response = self.weather_agent.run(weather_query)
-            print(f"天气查询结果: {weather_response[:200]}...\n")
+            try:
+                weather_response = future_weather.result()
+                print("✅ 天气查询完成")
+            except Exception as e:
+                print(f"❌ 天气查询失败: {e}")
+                import traceback
+                traceback.print_exc()
+                weather_response = "未获取到天气信息。"
 
-            # 步骤3: 酒店推荐Agent搜索酒店
-            print("🏨 步骤3: 搜索酒店...")
-            hotel_query = f"请搜索{request.city}的{request.accommodation}酒店"
-            hotel_response = self.hotel_agent.run(hotel_query)
-            print(f"酒店搜索结果: {hotel_response[:200]}...\n")
+            try:
+                hotel_response = future_hotel.result()
+                print("✅ 酒店推荐完成")
+            except Exception as e:
+                print(f"❌ 酒店推荐失败: {e}")
+                import traceback
+                traceback.print_exc()
+                hotel_response = "未获取到酒店信息。"
 
-            # 步骤4: 行程规划Agent整合信息生成计划
-            print("📋 步骤4: 生成行程计划...")
-            planner_query = self._build_planner_query(request, attraction_response, weather_response, hotel_response)
-            planner_response = self.planner_agent.run(planner_query)
-            print(f"行程规划结果: {planner_response[:300]}...\n")
+        # 组装最终 Prompt 进行规划
+        print("🧠 正在综合信息生成行程规划...")
+        planner_query = self._build_planner_query(
+            request, attraction_response, weather_response, hotel_response
+        )
+        planner_response = self.planner_agent.run(planner_query)
 
-            # 解析最终计划
-            trip_plan = self._parse_response(planner_response, request)
+        # 解析并返回
+        return self._parse_response(planner_response, request)
 
-            print(f"{'='*60}")
-            print(f"✅ 旅行计划生成完成!")
-            print(f"{'='*60}\n")
-
-            return trip_plan
-
-        except Exception as e:
-            print(f"❌ 生成旅行计划失败: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return self._create_fallback_plan(request)
-    
     def _build_attraction_query(self, request: TripRequest) -> str:
         """构建景点搜索查询 - 直接包含工具调用"""
         keywords = []

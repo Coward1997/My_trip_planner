@@ -49,3 +49,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+#AI工具
+.idea/
+.claude/
